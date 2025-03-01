@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Audio Transcription</title>
+</head>
+<body>
+    <h1>Real-Time Audio Transcription</h1>
+
+    <!-- Resume and JD Upload Section -->
+    <h2>Upload Resume & Job Description</h2>
+    <input type="file" id="resumeUpload" accept=".pdf">
+    <input type="file" id="jdUpload" accept=".pdf">
+    <button id="uploadFiles">Upload Files</button>
+    <p id="uploadStatus">Waiting for file upload...</p>
+
+    <h2>Question:</h2>
+    <p id="questionText">Waiting for question...</p>
+    <audio id="questionAudio" controls></audio>
+
+    <h2>Transcription:</h2>
+    <button id="startButton" disabled>Start Recording</button>
+    <button id="stopButton" disabled>Stop Recording</button>
+    <div id="transcriptionResult"></div>
+
+    <script>
+        let socket;
+        let audioContext;
+        let mediaStream;
+        let mediaRecorder;
+        let audioChunks = [];
+        let resumeUploaded = false;
+        let jdUploaded = false;
+
+        // Establish WebSocket connection
+        socket = new WebSocket('ws://127.0.0.1:8000/ws/interview/');
+
+        socket.onopen = function(event) {
+            console.log('WebSocket is connected!');
+        };
+
+        socket.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+
+            // Display question text
+            if (data.question) {
+                document.getElementById('questionText').innerText = data.question;
+            }
+
+            // Play received question audio
+            if (data.audio) {
+                const audioElement = document.getElementById('questionAudio');
+                const audioBlob = new Blob([Uint8Array.from(atob(data.audio), c => c.charCodeAt(0))], { type: 'audio/mp3' });
+                const audioURL = URL.createObjectURL(audioBlob);
+                audioElement.src = audioURL;
+                audioElement.play();
+            }
+
+            // Display transcription result
+            if (data.transcription) {
+                document.getElementById('transcriptionResult').innerText = data.transcription;
+            }
+
+            // Enable recording after files are uploaded
+            if (data.message === "Interview started! Best of Luck!") {
+                document.getElementById('startButton').disabled = false;
+            }
+        };
+
+        socket.onclose = function(event) {
+            console.log('WebSocket is closed!');
+        };
+
+        // Convert file to Base64
+        function convertToBase64(file, callback) {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = () => callback(reader.result.split(',')[1]); // Remove prefix (data:application/pdf;base64,)
+            reader.onerror = error => console.error("Error reading file:", error);
+        }
+
+        // Upload Resume & JD
+        document.getElementById('uploadFiles').addEventListener('click', function () {
+            const resumeFile = document.getElementById('resumeUpload').files[0];
+            const jdFile = document.getElementById('jdUpload').files[0];
+
+            if (!resumeFile || !jdFile) {
+                alert("Please upload both Resume and Job Description!");
+                return;
+            }
+
+            // Convert Resume
+            convertToBase64(resumeFile, function (base64Resume) {
+                socket.send(JSON.stringify({ resume: base64Resume }));
+                resumeUploaded = true;
+                checkFilesUploaded();
+            });
+
+            // Convert JD
+            convertToBase64(jdFile, function (base64JD) {
+                socket.send(JSON.stringify({ job_description: base64JD }));
+                jdUploaded = true;
+                checkFilesUploaded();
+            });
+
+            document.getElementById('uploadStatus').innerText = "Uploading files...";
+        });
+
+        // Check if both files are uploaded and enable recording
+        function checkFilesUploaded() {
+            if (resumeUploaded && jdUploaded) {
+                document.getElementById('uploadStatus').innerText = "Files uploaded successfully! Interview starting...";
+            }
+        }
+
+        // Start recording and send audio to WebSocket
+        function startRecording() {
+            navigator.mediaDevices.getUserMedia({ audio: true })
+                .then(stream => {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    mediaStream = stream;
+                    mediaRecorder = new MediaRecorder(stream);
+                    
+                    mediaRecorder.ondataavailable = event => {
+                        audioChunks.push(event.data);
+                        if (mediaRecorder.state == "inactive" || mediaRecorder.state == "paused") {
+                            const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                            socket.send(audioBlob);
+                            audioChunks = [];
+                        }
+                    };
+                    
+                    mediaRecorder.start(100); // Captures audio in chunks
+                    document.getElementById('startButton').disabled = true;
+                    document.getElementById('stopButton').disabled = false;
+                    console.log("Recording started...");
+                })
+                .catch(err => console.error("Error accessing microphone", err));
+        }
+
+        function stopRecording() {
+            mediaRecorder.stop();
+            mediaStream.getTracks().forEach(track => track.stop());
+            document.getElementById('startButton').disabled = false;
+            document.getElementById('stopButton').disabled = true;
+            console.log("Recording stopped.");
+        }
+
+        // Button event listeners
+        document.getElementById('startButton').addEventListener('click', startRecording);
+        document.getElementById('stopButton').addEventListener('click', stopRecording);
+    </script>
+</body>
+</html>
+
